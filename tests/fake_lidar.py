@@ -12,7 +12,8 @@ Modes:
   normal    a save changes the running and the stored values
   volatile  a save changes only the running values (lost at a restart)
   refuse    a save with destination = gateway is ignored (seen on 2026-10-01)
-  reset     a save works, but the answer is a TCP reset (the real Airy, 2026-10-05)
+  reset     a save works, the answer is a TCP reset, and the lidar restarts by
+            itself (the real Airy, 2026-10-05)
 
 Practice run:  python3 fake_lidar.py --port 8080
                python3 ../rs_webcfg.py info --host 127.0.0.1:8080
@@ -144,6 +145,7 @@ def make_handler(fake: FakeAiry):
             if self.path == "/Parameter_Setting.html":
                 fake.apply_form(pairs)
                 if fake.mode == "reset":
+                    fake.restart()
                     # Close with SO_LINGER 0: the client gets a RST and no answer.
                     self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
                     self.connection.close()

@@ -169,6 +169,8 @@ class EndToEnd(unittest.TestCase):
             rc, text = quiet(rs.upload, rs.Lidar(srv.host), {"SyTOut": "6"}, fast())
             self.assertEqual(rc, rs.EXIT_OK, text)
             self.assertIn("without an answer", text)
+            self.assertIn("restarted by itself", text)
+            self.assertNotIn("Soft reset", text)
             self.assertIn("PASS", text)
             self.assertEqual(srv.fake.stored["SyTOut"], "6")
 

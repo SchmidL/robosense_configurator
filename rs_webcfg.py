@@ -945,6 +945,7 @@ class UploadOptions:
     new_host: Optional[str] = None   # where to look after an address change (for a tunnel)
     poll_s: float = 2.0
     between_s: float = 1.0           # pause between two saves
+    self_restart_s: float = 30.0     # wait for a restart by itself, if the read-back got no answer
 
 
 def compare(want: Dict[str, str], got: Dict[str, str]) -> List[Tuple[str, str, str, bool]]:
@@ -1080,19 +1081,38 @@ def upload(lidar: Lidar, wanted_patch: Dict[str, str], opt: UploadOptions) -> in
         if n_ok == 0:
             print(style("  The lidar shows none of the changes. The save was probably refused.", "yellow"))
 
-    # 3. Restart
-    if opt.reboot == "none":
-        print(style("No restart. The values are NOT proven to be stored. After the next power cycle, run:\n"
-                    "  rs_webcfg.py verify <file>", "yellow"))
-        return EXIT_OK if running is not None and all(r[3] for r in compare(wanted, running)) else EXIT_VERIFY
-    if opt.reboot == "soft":
-        try:
-            print(f"Soft reset: {_answer(lidar.soft_reset())}")
-        except LidarError as e:
-            print(style(f"Soft reset failed: {e}. Disconnect and connect the power instead.", "yellow"))
-    else:
-        print(style("Now disconnect the power of the lidar. Wait 5 s. Connect the power again.", "bold"))
-    restarted = wait_restart([after, lidar] if after is not lidar else [lidar], before, opt)
+    # 3. Restart. The Airy can restart by itself after a save (2026-10-05:
+    # the start-up count rose before a power cycle was possible). Then no
+    # further restart is necessary.
+    candidates = [after, lidar] if after is not lidar else [lidar]
+    restarted = None
+    if before is not None:
+        # One look if the lidar answered the read-back; if not, it is maybe
+        # booting: give it up to self_restart_s to come back.
+        until = time.monotonic() + (0 if running is not None else opt.self_restart_s)
+        while restarted is None:
+            for c in candidates:
+                n = Lidar(f"{c.host}:{c.port}", timeout=1.5, retries=0).startup_count()
+                if n is not None and n > before:
+                    restarted = (c, n)
+                    print("The lidar restarted by itself after the save.")
+                    break
+            if restarted is not None or time.monotonic() >= until:
+                break
+            time.sleep(opt.poll_s)
+    if restarted is None:
+        if opt.reboot == "none":
+            print(style("No restart. The values are NOT proven to be stored. After the next power cycle, run:\n"
+                        "  rs_webcfg.py verify <file>", "yellow"))
+            return EXIT_OK if running is not None and all(r[3] for r in compare(wanted, running)) else EXIT_VERIFY
+        if opt.reboot == "soft":
+            try:
+                print(f"Soft reset: {_answer(lidar.soft_reset())}")
+            except LidarError as e:
+                print(style(f"Soft reset failed: {e}. Disconnect and connect the power instead.", "yellow"))
+        else:
+            print(style("Now disconnect the power of the lidar. Wait 5 s. Connect the power again.", "bold"))
+        restarted = wait_restart(candidates, before, opt)
     if restarted is None:
         print(style("The lidar did not come back with a new start-up count in time.", "red"))
         print(f"  Look for it at {after}. Then run: rs_webcfg.py verify <file> --host <address>")
