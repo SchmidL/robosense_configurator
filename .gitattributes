@@ -1,0 +1,6 @@
+# LF on disk for every text file, also with core.autocrlf=true: a CRLF shebang
+# line ("python3\r") does not start on Linux.
+* text=auto eol=lf
+
+# Captured lidar pages stay byte for byte as the lidar served them.
+tests/fixtures/** -text

@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# Written by the tool before each write to a lidar.
+rs_webcfg_backups/
