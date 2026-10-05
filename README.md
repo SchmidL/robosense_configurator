@@ -13,7 +13,7 @@ inside the lidar. No browser is necessary. It works on a laptop and on a headles
 | Airy | `26042112` | PASS, 2026-10-05 | All fields of the catalog |
 | Fairy | `26031303` | PASS, 2026-10-05 | 12 fields fewer, no IMU rate 500Hz. See `ui-check` |
 
-The captured pages are in `tests/fixtures/`. Run `ui-check` before you write to a new
+Reduced copies of their pages are in `tests/fixtures/`. Run `ui-check` before you write to a new
 model or a new firmware.
 
 ## Quick start
@@ -179,17 +179,29 @@ fields of that form. Without the form, it sends nothing.
   normal for a smaller model. Uploads are possible.
 - A field, an option, or a label on the page that the catalog does not know: an error,
   exit code 2. Add it to `CATALOG` in `rs_webcfg.py`, and add the page to
-  `tests/fixtures/`.
+  `tests/fixtures/` with `tests/make_fixture.py` (see below).
 
 ## Tests
 
 ```bash
-cd misc/robosense_webcfg
 python3 -m unittest discover -s tests -v
 ```
 
-`tests/fake_lidar.py` is a fake lidar web server (`--model` selects Airy or Fairy). It serves the captured pages and keeps
-running and stored values apart, like the real lidar. Its mode `reset` acts like the real lidars:
+`tests/fixtures/<model>_<software>/` holds the test data of each tested lidar. The pages
+are not copies of the RoboSense pages. `tests/make_fixture.py` keeps only the controls of
+the settings form (names, lists, options, in page order), and it replaces the serial
+number and the MAC address with fake values. For a new model, save
+`Parameter_Setting.html`, `setting_data.json`, `device_data.json`, and `diag_data.json` of
+the lidar in a folder, then:
+
+```bash
+python3 tests/make_fixture.py <folder> tests/fixtures/<model>_<software>
+```
+
+Do not commit the original pages: RoboSense holds their copyright.
+
+`tests/fake_lidar.py` is a fake lidar web server (`--model` selects Airy or Fairy). It
+serves the test data and keeps running and stored values apart, like the real lidar. Its mode `reset` acts like the real lidars:
 TCP reset after a save, then a restart. The modes `volatile` and `refuse` simulate a save
 that is lost at the restart and a save that the lidar refuses. To practise
 without a lidar:
@@ -207,3 +219,8 @@ python3 rs_webcfg.py configure --host 127.0.0.1:8080 --reboot soft
 | 1 | Usage error, no connection, or you said no |
 | 2 | The check found an error. Nothing was sent |
 | 3 | The read-back does not agree, or no restart was seen |
+
+## License
+
+MIT, see `LICENSE`. RoboSense, Airy, and Fairy are names of RoboSense. This project has
+no connection with RoboSense.
