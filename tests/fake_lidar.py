@@ -12,6 +12,7 @@ Modes:
   normal    a save changes the running and the stored values
   volatile  a save changes only the running values (lost at a restart)
   refuse    a save with destination = gateway is ignored (seen on 2026-10-01)
+  reset     a save works, but the answer is a TCP reset (the real Airy, 2026-10-05)
 
 Practice run:  python3 fake_lidar.py --port 8080
                python3 ../rs_webcfg.py info --host 127.0.0.1:8080
@@ -23,6 +24,8 @@ import argparse
 import copy
 import json
 import os
+import socket
+import struct
 import threading
 import time
 import urllib.parse
@@ -140,6 +143,12 @@ def make_handler(fake: FakeAiry):
             fake.posts.append((self.path, pairs))
             if self.path == "/Parameter_Setting.html":
                 fake.apply_form(pairs)
+                if fake.mode == "reset":
+                    # Close with SO_LINGER 0: the client gets a RST and no answer.
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                    self.connection.close()
+                    self.close_connection = True
+                    return
                 self._send(200, _read("Parameter_Setting.html"), "text/html")
             elif self.path == "/upload-json":
                 fake.apply_json(pairs)
@@ -178,7 +187,7 @@ class FakeServer:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("--mode", choices=("normal", "volatile", "refuse"), default="normal")
+    ap.add_argument("--mode", choices=("normal", "volatile", "refuse", "reset"), default="normal")
     a = ap.parse_args()
     srv = FakeServer(a.mode, a.port)
     print(f"Fake Airy ({a.mode}) at http://{srv.host}. Ctrl+C stops. "

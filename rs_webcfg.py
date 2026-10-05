@@ -764,7 +764,11 @@ class Lidar:
             h["Referer"] = self.base + referer
         return h
 
-    def post(self, path: str, body: bytes, content_type: str, referer: str) -> int:
+    def post(self, path: str, body: bytes, content_type: str, referer: str) -> Optional[int]:
+        """The HTTP status, or None if the lidar closed the connection without an
+        answer. The Airy (software 26042112) resets the connection after a save
+        of the form, and it applies the save all the same (seen 2026-10-05).
+        So a reset is no error here: the read-back after the save decides."""
         headers = self._headers(referer)
         headers["Content-Type"] = content_type
         req = urllib.request.Request(self.base + path, data=body, headers=headers, method="POST")
@@ -775,19 +779,26 @@ class Lidar:
         except urllib.error.HTTPError as e:
             raise LidarError(f"POST {self.base}{path}: HTTP {e.code}") from None
         except (urllib.error.URLError, OSError) as e:
+            cause = e.reason if isinstance(e, urllib.error.URLError) else e
+            if isinstance(cause, ConnectionResetError):   # includes http.client.RemoteDisconnected
+                return None
             raise LidarError(f"POST {self.base}{path}: {_reason(e)}") from None
 
-    def post_form(self, pairs: Sequence[Tuple[str, str]]) -> int:
+    def post_form(self, pairs: Sequence[Tuple[str, str]]) -> Optional[int]:
         return self.post(PATH_FORM, encode_form(pairs), "application/x-www-form-urlencoded", PATH_FORM)
 
-    def post_json_upload(self, settings: Dict[str, str]) -> int:
+    def post_json_upload(self, settings: Dict[str, str]) -> Optional[int]:
         # The page builds a hidden form from the JSON and posts URLSearchParams.
         return self.post(PATH_UPLOAD_JSON, encode_form(list(settings.items())),
                          "application/x-www-form-urlencoded;charset=UTF-8", "/Firmware_Update.html")
 
-    def soft_reset(self) -> int:
+    def soft_reset(self) -> Optional[int]:
         return self.post(PATH_SOFT_RESET, b"", "application/x-www-form-urlencoded;charset=UTF-8",
                          "/Firmware_Update.html")
+
+
+def _answer(status: Optional[int]) -> str:
+    return f"HTTP {status}" if status is not None else "sent (the lidar closed the connection without an answer)"
 
 
 def _reason(e: Optional[BaseException]) -> str:
@@ -1013,19 +1024,20 @@ def upload(lidar: Lidar, wanted_patch: Dict[str, str], opt: UploadOptions) -> in
         except ValueError as e:
             print(style(f"Cannot build the form: {e}", "red"))
             return EXIT_ERROR
-        plan = [f"POST {PATH_FORM} with the '{SECTION_TITLE[s]}' Save button" for s in sections]
-        print(f"Form layout: {source}")
+        if source != "live web page":
+            print(style(f"Warning: the form comes from the {source}.", "yellow"))
     else:
         bodies = []
-        plan = [f"POST {PATH_UPLOAD_JSON} with all {len(wanted)} keys"]
-    print("Plan:")
-    for line in plan:
-        print("  " + line)
-    restart_text = {"manual": "you disconnect and connect the power", "soft": f"POST {PATH_SOFT_RESET}",
-                    "none": "no restart: the result stays unproven"}[opt.reboot]
-    print(f"  then read back, restart ({restart_text}), read back again and compare")
 
     if opt.dry_run:
+        print("Plan:")
+        for s in sections if opt.via == "form" else []:
+            print(f"  POST {PATH_FORM} with the '{SECTION_TITLE[s]}' Save button")
+        if opt.via == "json":
+            print(f"  POST {PATH_UPLOAD_JSON} with all {len(wanted)} keys")
+        restart_text = {"manual": "you disconnect and connect the power", "soft": f"POST {PATH_SOFT_RESET}",
+                        "none": "no restart: the result stays unproven"}[opt.reboot]
+        print(f"  then read back, restart ({restart_text}), read back again and compare")
         for s, pairs in bodies:
             print(f"\n--- body for '{s}' ---\n{encode_form(pairs).decode()}")
         if opt.via == "json":
@@ -1046,10 +1058,10 @@ def upload(lidar: Lidar, wanted_patch: Dict[str, str], opt: UploadOptions) -> in
         if opt.via == "form":
             for s, pairs in bodies:
                 status = lidar.post_form(pairs)
-                print(f"Saved '{SECTION_TITLE[s]}': HTTP {status}")
+                print(f"Saved '{SECTION_TITLE[s]}': {_answer(status)}")
                 time.sleep(opt.between_s)
         else:
-            print(f"Uploaded JSON: HTTP {lidar.post_json_upload(wanted)}")
+            print(f"Uploaded JSON: {_answer(lidar.post_json_upload(wanted))}")
     except LidarError as e:
         print(style(f"Save failed: {e}", "red"))
         return EXIT_ERROR
@@ -1075,7 +1087,7 @@ def upload(lidar: Lidar, wanted_patch: Dict[str, str], opt: UploadOptions) -> in
         return EXIT_OK if running is not None and all(r[3] for r in compare(wanted, running)) else EXIT_VERIFY
     if opt.reboot == "soft":
         try:
-            print(f"Soft reset: HTTP {lidar.soft_reset()}")
+            print(f"Soft reset: {_answer(lidar.soft_reset())}")
         except LidarError as e:
             print(style(f"Soft reset failed: {e}. Disconnect and connect the power instead.", "yellow"))
     else:
@@ -1341,7 +1353,7 @@ def cmd_reboot(args) -> int:
     before = lidar.startup_count()
     if not confirm(f"Restart the lidar at {lidar} with {PATH_SOFT_RESET}?", args.yes):
         return EXIT_ERROR
-    print(f"Soft reset: HTTP {lidar.soft_reset()}")
+    print(f"Soft reset: {_answer(lidar.soft_reset())}")
     opt = UploadOptions(reboot="soft", restart_timeout_s=args.restart_timeout)
     res = wait_restart([lidar], before, opt)
     if res is None:

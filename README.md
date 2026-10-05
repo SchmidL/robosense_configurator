@@ -81,6 +81,8 @@ Add the address in a second terminal while the tool waits for the restart.
 4. **Backup.** The old values go to `rs_webcfg_backups/<model>_<serial>_<time>.json`.
 5. **Save.** The same request as the browser: one POST to `/Parameter_Setting.html` for
    each tab with a change, with its own Save button. The tab with the address is last.
+   The Airy answers a save with a TCP reset and no HTTP answer, but it applies the save.
+   So the tool does not stop at a reset. Step 6 decides.
 6. **Read back now.** This shows the running values. If none of the changes is visible,
    the lidar refused the save.
 7. **Restart.** Default: you disconnect and connect the power. The tool waits until the

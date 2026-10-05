@@ -164,6 +164,14 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(rc, rs.EXIT_OK, text)
             self.assertEqual({k: srv.fake.stored[k] for k in patch}, patch)
 
+    def test_connection_reset_after_save_is_no_error(self):
+        with FakeServer("reset") as srv:
+            rc, text = quiet(rs.upload, rs.Lidar(srv.host), {"SyTOut": "6"}, fast())
+            self.assertEqual(rc, rs.EXIT_OK, text)
+            self.assertIn("without an answer", text)
+            self.assertIn("PASS", text)
+            self.assertEqual(srv.fake.stored["SyTOut"], "6")
+
     def test_volatile_save_fails_verify(self):
         with FakeServer("volatile") as srv:
             rc, text = quiet(rs.upload, rs.Lidar(srv.host), {"SynSrc": "PTP-GPTP"}, fast())
