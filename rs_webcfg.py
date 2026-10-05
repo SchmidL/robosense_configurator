@@ -2,8 +2,9 @@
 """rs_webcfg: read, change, write, and verify the settings of a RoboSense lidar
 through the small web server inside the lidar.
 
-Tested against the RoboSense Airy (web page of software 26042112). The Fairy uses
-the same page family; run `rs_webcfg.py ui-check` on a new model or firmware first.
+Tested with a write on the RoboSense Airy (software 26042112) and Fairy (software
+26031303). The Fairy page has fewer fields: the tool reads the form of each lidar
+and sends only its fields. Run `rs_webcfg.py ui-check` on a new model or firmware.
 
 Why this tool exists:
 
@@ -323,25 +324,31 @@ class Control:
     options: Tuple[Tuple[str, str], ...] = ()
 
 
-def _builtin_layout() -> List[Control]:
-    """The form as captured from the Airy, software 26042112. Used when the
-    live page cannot be read or parsed."""
-    gen = ("SrcIp SrcMask SrcGateWay DstIp MPort MPort1 DPort ReMode FovS FovE SynSrc PDomNum RTPdelay "
-           "NoLeap SyTOut UToL LToU OpM PhaLockSet GPSBRate MotorR ImuCtrl IPort ImuOutR AccRg GyroRg Lpf "
-           "ResDefault").split()
-    perf = "RefEn TFilLvl BlkRnDis Rn Blk FSAgl PoorMask DZ10cm C81858993 GapFill RanM RnFgSwt L48".split()
-    out = [Control("radio", "tabs-two", "general", "on")]
-    out += [Control("select" if BY_KEY[k].kind == "choice" else "field", k, "general") for k in gen]
-    out += [Control("submit", "save_param", "general", "Save"), Control("radio", "tabs-two", "performance", "on")]
-    out += [Control("select" if BY_KEY[k].kind == "choice" else "field", k, "performance") for k in perf]
-    out += [Control("submit", "save_param_performance", "performance", "Save"),
-            Control("radio", "tabs-two", "pulse", "on"),
-            Control("checkbox", "mode1", "pulse", "Mode1(+25%)"),
-            Control("checkbox", "mode2", "pulse", "Mode2"),
-            Control("checkbox", "first_group_switch", "pulse", "ON")]
-    out += [Control("field", n, "pulse") for n in PULSE_FIELDS]
-    out.append(Control("submit", "save_param_pulse", "pulse", "Save"))
-    return out
+@dataclass
+class Page:
+    """What the web form of one lidar offers. Models differ: the Fairy page
+    (software 26031303) has 12 fields fewer than the Airy page, and no IMU
+    rate 500Hz. So the form of the lidar itself defines what can be sent."""
+    controls: List[Control]
+    keys: frozenset                       # catalog keys that the form can send
+    options: Dict[str, Tuple[str, ...]]   # key -> codes offered in the list
+
+
+def page_of(controls: Sequence[Control]) -> Page:
+    keys = set()
+    options: Dict[str, Tuple[str, ...]] = {}
+    names = {c.name for c in controls}
+    for c in controls:
+        p = BY_FORM.get(c.name)
+        if p is not None and c.kind in ("field", "select"):
+            keys.add(p.key)
+            if c.kind == "select":
+                options[p.key] = tuple(code for code, _ in c.options)
+    if names & {"mode1", "mode2"}:
+        keys.add("TriggerMode")
+    if "first_group_switch" in names:
+        keys.add("GroupSelect")
+    return Page(list(controls), frozenset(keys), options)
 
 
 class _FormParser(HTMLParser):
@@ -582,9 +589,10 @@ def _ip_ok_device(ip: str) -> bool:
 
 
 def check_settings(s: Dict[str, str], caps: Caps, live: Optional[Dict[str, str]] = None,
-                   allow_danger: bool = False) -> List[Issue]:
-    """The checks of the web page (validateForm), the lidar capabilities, and the
-    lessons from the zuriverse4d bring-up."""
+                   allow_danger: bool = False, page: Optional[Page] = None) -> List[Issue]:
+    """The checks of the web page (validateForm), the fields and lists of the
+    form of this lidar (page), the lidar capabilities, and the lessons from the
+    zuriverse4d bring-up."""
     issues: List[Issue] = []
 
     def err(k: str, t: str) -> None:
@@ -604,8 +612,16 @@ def check_settings(s: Dict[str, str], caps: Caps, live: Optional[Dict[str, str]]
         except ValueError as e:
             err(k, str(e))
             continue
+        changed = live is None or k not in live or not values_equal(k, live[k], v)
+        if page is not None and changed and p.section in SECTIONS and k not in page.keys:
+            err(k, "the web page of this lidar has no such field")
+            continue
         if p.kind == "choice":
-            if caps and not _option_shown(k, v, caps):
+            if page is not None and k in page.options:
+                if changed and v not in page.options[k]:
+                    offered = ", ".join(display(k, c) for c in page.options[k])
+                    err(k, f"'{display(k, v)}' is not offered by the web page of this lidar ({offered})")
+            elif caps and not _option_shown(k, v, caps):
                 err(k, f"'{display(k, v)}' is not offered by the web page of this lidar")
         elif p.kind in ("port", "int", "number") and p.lo is not None and p.hi is not None:
             f = float(v)
@@ -750,12 +766,13 @@ class Lidar:
         except (LidarError, ValueError):
             return None
 
-    def layout(self) -> Tuple[List[Control], str]:
-        """The live form, or the built-in copy if the page cannot be parsed."""
+    def page(self) -> Page:
+        """The form of this lidar. A write needs it: the models differ."""
+        html = self.get(PATH_FORM).decode("utf-8", "replace")
         try:
-            return parse_form(self.get(PATH_FORM).decode("utf-8", "replace")), "live web page"
-        except (LidarError, ValueError) as e:
-            return _builtin_layout(), f"built-in copy ({e})"
+            return page_of(parse_form(html))
+        except ValueError as e:
+            raise LidarError(f"{self.base}{PATH_FORM}: cannot read the form ({e})") from None
 
     def _headers(self, referer: Optional[str] = None) -> Dict[str, str]:
         h = {"User-Agent": f"rs_webcfg/{__version__}", "Connection": "close"}
@@ -833,7 +850,9 @@ def route_hint(target_ip: str, prefix: int = 24) -> Optional[str]:
             + (f" (it would use {src})" if src else "") + ".\n"
             f"    Linux:   sudo ip addr add {want} dev <port>\n"
             f"    Windows: give the Ethernet adapter the address {want.split('/')[0]}, mask "
-            f"{ipaddress.IPv4Network(f'0.0.0.0/{prefix}').netmask}")
+            f"{ipaddress.IPv4Network(f'0.0.0.0/{prefix}').netmask}\n"
+            f"    If the port has this address at other times: the port has no link. "
+            f"Examine the cable and the lidar power.")
 
 
 # ---------------------------------------------------------------------------
@@ -981,8 +1000,16 @@ def upload(lidar: Lidar, wanted_patch: Dict[str, str], opt: UploadOptions) -> in
     wanted.update(wanted_patch)
 
     print(f"Lidar: {device.get('lidar_model', '?')} S/N {device.get('sn', '?')} at {lidar}")
+    try:
+        page: Optional[Page] = lidar.page()
+    except LidarError as e:
+        if opt.via == "form":
+            print(style(f"Error: {e}. Nothing was sent.", "red"))
+            return EXIT_ERROR
+        print(style(f"Warning: {e}. The fields of this model are not known.", "yellow"))
+        page = None
     changes = changed_keys(live, wanted)
-    issues = check_settings(wanted, caps, live, opt.allow_danger)
+    issues = check_settings(wanted, caps, live, opt.allow_danger, page)
     for k in changes:
         p = BY_KEY.get(k)
         if p is not None and p.section == "hidden" and not (opt.via == "json" and opt.allow_hidden):
@@ -1019,14 +1046,12 @@ def upload(lidar: Lidar, wanted_patch: Dict[str, str], opt: UploadOptions) -> in
 
     sections = [s for s in SAVE_ORDER if any(BY_KEY[k].section == s for k in changes if k in BY_KEY)]
     if opt.via == "form":
-        layout, source = lidar.layout()
+        assert page is not None
         try:
-            bodies = [(s, form_pairs(layout, wanted, s)) for s in sections]
+            bodies = [(s, form_pairs(page.controls, wanted, s)) for s in sections]
         except ValueError as e:
             print(style(f"Cannot build the form: {e}", "red"))
             return EXIT_ERROR
-        if source != "live web page":
-            print(style(f"Warning: the form comes from the {source}.", "yellow"))
     else:
         bodies = []
 
@@ -1224,7 +1249,9 @@ def cmd_info(args) -> int:
               f"-> {s.get('DstIp')}  MSOP {s.get('MPort')}  DIFOP {s.get('DPort')}  IMU {s.get('IPort')}")
         print(f"  Sync      {display('SynSrc', s.get('SynSrc', '?'))}  domain {s.get('PDomNum')}  "
               f"now: {diag.get('sync_sts', '?')} ({diag.get('sync_mode', '?')})")
-        print(f"  Variant   VarT {s.get('VarT')}  CWCSts {s.get('CWCSts')}  Cyc {s.get('Cyc')}  DRE {s.get('DRE')}")
+        caps = caps_of(s)
+        if caps:
+            print("  Variant   " + "  ".join(f"{k} {v}" for k, v in caps.items()))
     if diag:
         print(f"  Health    {diag.get('temp', '?')} C  {diag.get('rpm', '?')} rpm  {diag.get('volt', '?')} V  "
               f"{diag.get('power', '?')} W  laser {diag.get('laser_sts', '?')}  start-ups {diag.get('startup_times', '?')}  "
@@ -1270,15 +1297,18 @@ def cmd_diff(args) -> int:
 def cmd_check(args) -> int:
     want = load_file(args.file)
     live = None
+    page = None
     if args.against_lidar:
-        live = _lidar(args).settings()
+        lidar = _lidar(args)
+        live = lidar.settings()
+        page = lidar.page()
         merged = dict(live)
         merged.update(want)
         want = merged
+    else:
+        print("Offline: the fields and lists of the lidar model are not checked. Use --against-lidar.")
     caps = caps_of(live or want)
-    if not caps:
-        print("No capability keys (VarT, Cyc, DRE, CWCSts) in the file: the variant checks are skipped.")
-    issues = check_settings(want, caps, live, args.allow_danger)
+    issues = check_settings(want, caps, live, args.allow_danger, page)
     unknown = [k for k in want if k not in BY_KEY]
     for k in unknown:
         issues.append(Issue("warn", k, "not in the catalog of this tool"))
@@ -1423,41 +1453,60 @@ def cmd_ui_check(args) -> int:
         html = lidar.get(PATH_FORM).decode("utf-8", "replace")
         where = str(lidar)
     controls = parse_form(html)
-    problems = ui_differences(controls)
-    if not problems:
-        print(style(f"The web form at {where} matches the catalog ({len(controls)} controls).", "green"))
-        return EXIT_OK
-    print(f"The web form at {where} differs from the catalog of this tool:")
-    for t in problems:
-        print("  - " + t)
-    print("Update CATALOG and _builtin_layout() in rs_webcfg.py before you upload to this lidar.")
-    return EXIT_CHECK
+    errors, notes = ui_differences(controls)
+    if notes:
+        print(f"This lidar has a smaller web page than the catalog. The tool sends only its fields:")
+        for t in notes:
+            print("  - " + t)
+    if errors:
+        print(style(f"The web form at {where} has things that the catalog does not know:", "red"))
+        for t in errors:
+            print("  - " + t)
+        print("Do not upload to this lidar. Add the new fields to CATALOG in rs_webcfg.py first.")
+        return EXIT_CHECK
+    print(style(f"The web form at {where} agrees with the catalog ({len(controls)} controls). "
+                "Uploads are possible.", "green"))
+    return EXIT_OK
 
 
-def ui_differences(controls: Sequence[Control]) -> List[str]:
-    out = []
+def ui_differences(controls: Sequence[Control]) -> Tuple[List[str], List[str]]:
+    """(errors, notes). An error is something on the page that the catalog does
+    not know: an upload is then not safe. A note is a catalog field or option
+    that this model does not have: that is normal."""
+    errors: List[str] = []
+    notes: List[str] = []
     known_forms = set(BY_FORM) | {"mode1", "mode2", "first_group_switch", "tabs-two"} | set(SUBMIT_NAME.values())
     for c in controls:
         if c.name not in known_forms:
-            out.append(f"new control '{c.name}' ({c.kind}) in the {c.section} tab")
+            errors.append(f"new control '{c.name}' ({c.kind}) in the {c.section} tab")
             continue
         p = BY_FORM.get(c.name)
         if p is None:
             continue
         if p.section != c.section:
-            out.append(f"'{c.name}' is in the {c.section} tab, catalog says {p.section}")
+            errors.append(f"'{c.name}' is in the {c.section} tab, catalog says {p.section}")
         if c.kind == "select":
             if p.kind != "choice":
-                out.append(f"'{c.name}' is a list on the page, catalog says {p.kind}")
-            elif set(c.options) != set(p.choices):
-                out.append(f"'{c.name}' options on the page {list(c.options)} != catalog {list(p.choices)}")
+                errors.append(f"'{c.name}' is a list on the page, catalog says {p.kind}")
+                continue
+            catalog = dict(p.choices)
+            for code, lab in c.options:
+                if code not in catalog:
+                    errors.append(f"{p.label} [{p.key}]: option {code} = '{lab}' is new")
+                elif _norm(catalog[code]) != _norm(lab):
+                    errors.append(f"{p.label} [{p.key}]: option {code} is '{lab}' on the page, "
+                                  f"'{catalog[code]}' in the catalog")
+            missing = [lab for code, lab in p.choices if code not in dict(c.options)]
+            if missing:
+                notes.append(f"{p.label} [{p.key}]: no option {', '.join(missing)}")
         elif c.kind == "field" and p.kind == "choice":
-            out.append(f"'{c.name}' is a text field on the page, catalog says list")
+            errors.append(f"'{c.name}' is a text field on the page, catalog says list")
     names = {c.name for c in controls}
-    for p in CATALOG:
-        if p.section in SECTIONS and p.form != "" and p.form_name not in names:
-            out.append(f"catalog field '{p.form_name}' ({p.label}) is not on the page")
-    return out
+    absent = [f"{p.label} [{p.key}]" for p in CATALOG
+              if p.section in SECTIONS and p.form != "" and p.form_name not in names]
+    if absent:
+        notes.append("no field " + ", ".join(absent))
+    return errors, notes
 
 
 # ---------------------------------------------------------------------------
@@ -1466,7 +1515,9 @@ def ui_differences(controls: Sequence[Control]) -> List[str]:
 class Configurator:
     """A menu in the terminal. It works over SSH and needs no extra package."""
 
-    def __init__(self, base: Dict[str, str], source: str, lidar: Optional[Lidar], args) -> None:
+    def __init__(self, base: Dict[str, str], source: str, lidar: Optional[Lidar], args,
+                 page: Optional[Page] = None) -> None:
+        self.page = page
         self.base = base
         self.pending: Dict[str, str] = {}
         self.source = source
@@ -1477,6 +1528,18 @@ class Configurator:
     def value(self, k: str) -> str:
         return self.pending.get(k, self.base.get(k, ""))
 
+    def on_page(self, p: Param) -> bool:
+        """False for a field of the catalog that the form of this lidar does not have."""
+        return self.page is None or p.section not in SECTIONS or p.key in self.page.keys
+
+    def choices(self, p: Param) -> Tuple[Tuple[str, str], ...]:
+        if self.page is not None and p.key in self.page.options:
+            return tuple(c for c in p.choices if c[0] in self.page.options[p.key])
+        return p.available_choices(self.caps)
+
+    def issues(self, settings: Dict[str, str]) -> List[Issue]:
+        return check_settings(settings, self.caps, self.base, self.args.allow_danger, self.page)
+
     def run(self) -> int:
         print(style(f"rs_webcfg configurator - {self.source}", "bold"))
         print("Enter a number or a letter. '?' shows help. Ctrl+C or 'q' leaves.\n")
@@ -1484,7 +1547,7 @@ class Configurator:
             n = len(changed_keys(self.base, self.merged()))
             print(style("Main menu", "bold"))
             for i, s in enumerate(SECTIONS, 1):
-                cnt = sum(1 for p in CATALOG if p.section == s)
+                cnt = sum(1 for p in CATALOG if p.section == s and p.key in self.base and self.on_page(p))
                 print(f"  {i}  {SECTION_TITLE[s]} ({cnt} settings)")
             print("  4  Not on the web page / read only")
             print("  n  Address profile: give X, get 192.168.X.200 -> 192.168.X.102")
@@ -1545,7 +1608,7 @@ class Configurator:
             print(style(f"\n{title}", "bold"))
             rows = []
             for i, p in enumerate(params, 1):
-                if p.key not in self.base and p.key not in self.pending:
+                if (p.key not in self.base and p.key not in self.pending) or not self.on_page(p):
                     continue
                 cur = display(p.key, self.value(p.key))
                 mark = style(" *", "yellow") if p.key in self.pending and not values_equal(
@@ -1557,7 +1620,7 @@ class Configurator:
             if not c:
                 print()
                 return
-            if c.isdigit() and 1 <= int(c) <= len(params):
+            if c.isdigit() and 1 <= int(c) <= len(params) and self.on_page(params[int(c) - 1]):
                 self.edit(params[int(c) - 1])
 
     def edit(self, p: Param) -> None:
@@ -1573,7 +1636,7 @@ class Configurator:
         if p.section == "hidden":
             print(style("  Not on the web page. Only 'upload --via json --allow-hidden' sends it.", "yellow"))
         print(f"  Now: {display(p.key, self.value(p.key))}")
-        opts = p.available_choices(self.caps) if p.kind == "choice" else ()
+        opts = self.choices(p) if p.kind == "choice" else ()
         if opts:
             for i, (code, lab) in enumerate(opts, 1):
                 print(f"    {i}) {lab}" + (f"  (JSON value {code})" if lab != code else ""))
@@ -1593,9 +1656,8 @@ class Configurator:
                 continue
             trial = self.merged()
             trial[p.key] = v
-            old = {(i.key, i.text) for i in check_settings(self.merged(), self.caps, self.base,
-                                                           self.args.allow_danger)}
-            errs = [i for i in check_settings(trial, self.caps, self.base, self.args.allow_danger)
+            old = {(i.key, i.text) for i in self.issues(self.merged())}
+            errs = [i for i in self.issues(trial)
                     if (i.key, i.text) not in old or i.key == p.key]
             print_issues(errs)
             if any(i.level == "error" for i in errs):
@@ -1638,7 +1700,7 @@ class Configurator:
             return
         print(style("\nChanges", "bold"))
         table(rows, ["Setting", "Key", "Now", "New"])
-        issues = check_settings(m, self.caps, self.base, self.args.allow_danger)
+        issues = self.issues(m)
         if issues:
             print("Check:")
             print_issues(issues)
@@ -1661,7 +1723,7 @@ class Configurator:
         opt = _upload_options(self.args)
         modes = {"1": "manual", "2": "soft", "3": "none"}
         default = next(n for n, m in modes.items() if m == opt.reboot)
-        print("Restart after the save: 1) power cycle by hand (sure)  2) soft reset (not tested)  3) none")
+        print("If the lidar does not restart by itself: 1) power cycle by hand  2) soft reset (not tested)  3) none")
         opt.reboot = modes.get(self.ask(f"Choose [{default}]: ") or default, opt.reboot)
         assert self.lidar is not None
         rc = upload(self.lidar, patch, opt)
@@ -1673,18 +1735,20 @@ class Configurator:
 
 def cmd_configure(args) -> int:
     lidar = None
+    page = None
     if args.file:
         base = load_file(args.file)
         source = f"file {args.file} (offline)"
     else:
         lidar = _lidar(args)
         base = lidar.settings()
+        page = lidar.page()
         dev = _try(lidar.device) or {}
         source = f"{dev.get('lidar_model', 'lidar')} S/N {dev.get('sn', '?')} at {lidar}"
     if not args.out and args.file:
         args.out = args.file
     try:
-        return Configurator(base, source, lidar, args).run()
+        return Configurator(base, source, lidar, args, page).run()
     except KeyboardInterrupt:
         print("\nLeft without a save.")
         return EXIT_ERROR
@@ -1723,7 +1787,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--via", choices=("form", "json"), default="form",
                    help="form: the Save buttons of the Setting page (default). json: the JSON upload of the System page")
     w.add_argument("--reboot", choices=("manual", "soft", "none"), default="manual",
-                   help="restart before the verify: manual = you cycle the power (default), "
+                   help="if the lidar does not restart by itself after the save: manual = you cycle the power (default), "
                         "soft = POST /soft_reset (not tested), none = no proof of storage")
     w.add_argument("-y", "--yes", action="store_true", help="no question before the write")
     w.add_argument("--dry-run", action="store_true", help="show the plan and the request bodies, send nothing")

@@ -16,16 +16,21 @@ sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
 import rs_webcfg as rs  # noqa: E402
-from fake_lidar import FIXTURES, FakeServer  # noqa: E402
+from fake_lidar import FIXTURE_ROOT, FakeServer  # noqa: E402
+
+FAIRY_MODEL = "fairy_26031303"
 
 
-def fixture(name: str) -> str:
-    with open(os.path.join(FIXTURES, name), encoding="utf-8") as f:
+def fixture(name: str, model: str = "airy_26042112") -> str:
+    with open(os.path.join(FIXTURE_ROOT, model, name), encoding="utf-8") as f:
         return f.read()
 
 
 AIRY = json.loads(fixture("setting_data.json"))
 CAPS = rs.caps_of(AIRY)
+AIRY_PAGE = rs.page_of(rs.parse_form(fixture("Parameter_Setting.html")))
+FAIRY = json.loads(fixture("setting_data.json", FAIRY_MODEL))
+FAIRY_PAGE = rs.page_of(rs.parse_form(fixture("Parameter_Setting.html", FAIRY_MODEL)))
 
 
 def quiet(fn, *a, **kw):
@@ -47,13 +52,31 @@ class CatalogAndForm(unittest.TestCase):
         self.assertEqual(sorted(set(AIRY) - set(rs.BY_KEY)), [])
         self.assertEqual(sorted(set(rs.BY_KEY) - set(AIRY)), [])
 
-    def test_captured_form_matches_catalog(self):
-        self.assertEqual(rs.ui_differences(rs.parse_form(fixture("Parameter_Setting.html"))), [])
+    def test_captured_forms_match_catalog(self):
+        self.assertEqual(rs.ui_differences(AIRY_PAGE.controls), ([], []))
+        errors, notes = rs.ui_differences(FAIRY_PAGE.controls)
+        self.assertEqual(errors, [])
+        self.assertIn("Imu Output Rate [ImuOutR]: no option 500Hz", notes)
+        self.assertIn("Gap Filling Enable [GapFill]", notes[-1])
 
-    def test_builtin_layout_equals_captured_form(self):
-        live = [(c.kind, c.name, c.section, c.value) for c in rs.parse_form(fixture("Parameter_Setting.html"))]
-        builtin = [(c.kind, c.name, c.section, c.value) for c in rs._builtin_layout()]
-        self.assertEqual(live, builtin)
+    def test_fairy_keys_are_in_the_catalog(self):
+        self.assertEqual(sorted(set(FAIRY) - set(rs.BY_KEY)), [])
+        self.assertEqual(sorted(set(AIRY) - set(FAIRY)), ["CWCSts", "Cyc", "DRE", "RnFgSwt", "VarT"])
+
+    def test_fairy_page_is_a_part_of_the_airy_page(self):
+        missing = sorted(AIRY_PAGE.keys - FAIRY_PAGE.keys)
+        self.assertEqual(missing, sorted("MPort1 MotorR BlkRnDis Rn Blk PoorMask DZ10cm C81858993 GapFill "
+                                         "RanM RnFgSwt L48".split()))
+        self.assertEqual(FAIRY_PAGE.options["ImuOutR"], ("0", "1", "2", "3"))
+
+    def test_body_of_fairy_general_save(self):
+        body = rs.encode_form(rs.form_pairs(FAIRY_PAGE.controls, FAIRY, "general")).decode()
+        names = [n for n, _ in urllib.parse.parse_qsl(body)]
+        self.assertNotIn("MPort1", names)
+        self.assertNotIn("MotorR", names)
+        self.assertNotIn("GapFill", names)
+        self.assertEqual(names[:2], ["tabs-two", "SrcIp"])
+        self.assertIn("save_param", names)
 
     def test_body_of_general_save_is_the_browser_body(self):
         # Hand-written from the page: document order, the open tab radio, the
@@ -71,7 +94,7 @@ class CatalogAndForm(unittest.TestCase):
 
     def test_body_of_pulse_save_with_group_on(self):
         s = dict(AIRY, TriggerMode="1", GroupSelect="1", PulseStart="90.0")
-        body = rs.encode_form(rs.form_pairs(rs._builtin_layout(), s, "pulse")).decode()
+        body = rs.encode_form(rs.form_pairs(AIRY_PAGE.controls, s, "pulse")).decode()
         pairs = urllib.parse.parse_qsl(body)
         self.assertIn(("mode1", "Mode1(+25%)"), pairs)
         self.assertNotIn("mode2", dict(pairs))
@@ -133,8 +156,21 @@ class Checks(unittest.TestCase):
         self.assertIn(("error", "PulseWidth"), self.errors(PulseWidth="15"))
         self.assertIn(("warn", "DstIp"), self.errors(DstIp="192.168.13.1"))      # = gateway
         self.assertIn(("warn", "Rn"), self.errors(Rn="2"))                       # hidden for VarT 0
+        self.assertIn(("error", "ImuOutR"), self.errors(ImuOutR="4"))
         self.assertNotIn(("error", "ResDefault"),
                          {(i.level, i.key) for i in rs.check_settings(dict(AIRY, ResDefault="1"), CAPS, AIRY, True)})
+
+
+class FairyChecks(unittest.TestCase):
+    def errors(self, **change):
+        return {(i.level, i.key) for i in rs.check_settings(dict(FAIRY, **change), rs.caps_of(FAIRY), FAIRY,
+                                                            page=FAIRY_PAGE)}
+
+    def test_fairy(self):
+        self.assertEqual(self.errors(), set())
+        self.assertIn(("error", "GapFill"), self.errors(GapFill="1"))      # no such field on the Fairy page
+        self.assertIn(("error", "ImuOutR"), self.errors(ImuOutR="4"))      # no 500Hz on the Fairy page
+        self.assertEqual(self.errors(ImuOutR="2", SyTOut="6"), set())
 
 
 class EndToEnd(unittest.TestCase):
@@ -244,6 +280,23 @@ class EndToEnd(unittest.TestCase):
         with FakeServer() as srv:
             rc, text = quiet(rs.main, ["ui-check", "--host", srv.host])
             self.assertEqual(rc, 0, text)
+        with FakeServer(model=FAIRY_MODEL) as srv:
+            rc, text = quiet(rs.main, ["ui-check", "--host", srv.host])
+            self.assertEqual(rc, 0, text)
+            self.assertIn("smaller web page", text)
+
+    def test_fairy_upload(self):
+        with FakeServer(model=FAIRY_MODEL) as srv:
+            rc, text = quiet(rs.upload, rs.Lidar(srv.host), {"SyTOut": "6", "TFilLvl": "5"}, fast())
+            self.assertEqual(rc, rs.EXIT_OK, text)
+            self.assertEqual((srv.fake.stored["SyTOut"], srv.fake.stored["TFilLvl"]), ("6", "5"))
+            posted = [dict(p) for path, p in srv.fake.posts if path == "/Parameter_Setting.html"]
+            self.assertTrue(all("GapFill" not in p and "MPort1" not in p for p in posted))
+            n = len(srv.fake.posts)
+            rc, text = quiet(rs.upload, rs.Lidar(srv.host), {"GapFill": "1"}, fast())
+            self.assertEqual(rc, rs.EXIT_CHECK)
+            self.assertIn("has no such field", text)
+            self.assertEqual(len(srv.fake.posts), n)
 
 
 if __name__ == "__main__":

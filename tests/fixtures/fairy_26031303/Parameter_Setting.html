@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<!-- Reduced copy of Parameter_Setting.html of a RoboSense Fairy, software 26031303.
+     Only the controls of the settings form, in page order. Made by tests/make_fixture.py. -->
+<html><body><form method="POST">
+<input type="radio" name="tabs-two">
+<input type="text" name="SrcIp">
+<input type="text" name="SrcMask">
+<input type="text" name="SrcGateWay">
+<input type="text" name="DstIp">
+<input type="text" name="MPort">
+<input type="text" name="DPort">
+<select name="ReMode"><option value="0">Strongest</option><option value="1">First</option><option value="2">Last</option><option value="3">Dual</option></select>
+<input type="text" name="FovS">
+<input type="text" name="FovE">
+<select name="SynSrc"><option value="0">GPS</option><option value="1">PTP-E2E</option><option value="2">PTP-P2P</option><option value="3">PTP-GPTP</option><option value="4">PTP-E2E-L2</option></select>
+<input type="text" name="PDomNum">
+<select name="RTPdelay"><option value="0">OFF</option><option value="1">ON</option></select>
+<select name="NoLeap"><option value="0">OFF</option><option value="1">ON</option></select>
+<input type="text" name="SyTOut">
+<input type="text" name="UToL">
+<input type="text" name="LToU">
+<select name="OpM"><option value="0">Standby</option><option value="1">High-Performance</option></select>
+<input type="text" name="PhaLockSet">
+<select name="GPSBRate"><option value="3">9600</option><option value="4">14400</option><option value="5">19200</option><option value="6">38400</option><option value="7">43200</option><option value="8">57600</option><option value="9">76800</option><option value="10">115200</option></select>
+<select name="ImuCtrl"><option value="0">OFF</option><option value="1">ON</option></select>
+<input type="text" name="IPort">
+<select name="ImuOutR"><option value="0">25Hz</option><option value="1">50Hz</option><option value="2">100Hz</option><option value="3">200Hz</option></select>
+<select name="AccRg"><option value="0">[-2g, 2g]</option><option value="1">[-4g, 4g]</option><option value="2">[-8g, 8g]</option><option value="3">[-16g, 16g]</option></select>
+<select name="GyroRg"><option value="0">[-250, 250]dps</option><option value="1">[-500, 500]dps</option><option value="2">[-1000, 1000]dps</option><option value="3">[-2000, 2000]dps</option></select>
+<input type="text" name="Lpf">
+<select name="ResDefault"><option value="0">OFF</option><option value="1">ON</option></select>
+<input type="submit" name="save_param" value="Save">
+<input type="radio" name="tabs-two">
+<select name="RefEn"><option value="0">OFF</option><option value="1">ON1</option><option value="2">ON2</option><option value="3">ON3</option></select>
+<select name="TFilLvl"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option></select>
+<input type="text" name="FSAgl">
+<input type="submit" name="save_param_performance" value="Save">
+<input type="radio" name="tabs-two">
+<input type="checkbox" name="mode1" value="Mode1(+25%)">
+<input type="checkbox" name="mode2" value="Mode2">
+<input type="checkbox" name="first_group_switch" value="ON">
+<input type="text" name="first_start_angle">
+<input type="text" name="first_pulse_width">
+<input type="text" name="first_pulse_step">
+<input type="submit" name="save_param_pulse" value="Save">
+</form></body></html>

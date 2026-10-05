@@ -33,7 +33,9 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Optional, Tuple
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "airy_26042112")
+FIXTURE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+MODELS = ("airy_26042112", "fairy_26031303")   # folders in fixtures/
+FIXTURES = os.path.join(FIXTURE_ROOT, MODELS[0])
 
 SECTION_FIELDS = {
     "save_param": ("SrcIp SrcMask SrcGateWay DstIp MPort MPort1 DPort ReMode FovS FovE SynSrc PDomNum "
@@ -46,19 +48,21 @@ SECTION_FIELDS = {
 PULSE_MAP = {"first_start_angle": "PulseStart", "first_pulse_width": "PulseWidth", "first_pulse_step": "PulseStep"}
 
 
-def _read(name: str) -> bytes:
-    with open(os.path.join(FIXTURES, name), "rb") as f:
+def _read(name: str, model: str = MODELS[0]) -> bytes:
+    with open(os.path.join(FIXTURE_ROOT, model, name), "rb") as f:
         return f.read()
 
 
 class FakeAiry:
-    def __init__(self, mode: str = "normal", downtime_s: float = 0.3) -> None:
+    def __init__(self, mode: str = "normal", downtime_s: float = 0.3, model: str = MODELS[0]) -> None:
         self.mode = mode
+        self.model = model
         self.downtime_s = downtime_s
-        self.running: Dict[str, str] = json.loads(_read("setting_data.json"))
+        self.running: Dict[str, str] = json.loads(_read("setting_data.json", model))
         self.stored = copy.deepcopy(self.running)
-        self.device = json.loads(_read("device_data.json"))
-        self.diag = json.loads(_read("diag_data.json"))
+        self.device = json.loads(_read("device_data.json", model))
+        self.diag = json.loads(_read("diag_data.json", model))
+        self.form_html = _read("Parameter_Setting.html", model)
         self.posts: List[Tuple[str, List[Tuple[str, str]]]] = []
         self.down_until = 0.0
         self.lock = threading.Lock()
@@ -131,7 +135,7 @@ def make_handler(fake: FakeAiry):
             elif path == "/diag_data.json":
                 self._send(200, json.dumps(fake.diag).encode(), "application/json")
             elif path == "/Parameter_Setting.html":
-                self._send(200, _read("Parameter_Setting.html"), "text/html")
+                self._send(200, fake.form_html, "text/html")
             else:
                 self._send(404, b"404 - Page not found", "text/html")
 
@@ -151,7 +155,7 @@ def make_handler(fake: FakeAiry):
                     self.connection.close()
                     self.close_connection = True
                     return
-                self._send(200, _read("Parameter_Setting.html"), "text/html")
+                self._send(200, fake.form_html, "text/html")
             elif self.path == "/upload-json":
                 fake.apply_json(pairs)
                 self._send(200, b"", "text/html")
@@ -167,8 +171,8 @@ def make_handler(fake: FakeAiry):
 class FakeServer:
     """Start with `with FakeServer() as srv:`; the address is srv.host."""
 
-    def __init__(self, mode: str = "normal", port: int = 0) -> None:
-        self.fake = FakeAiry(mode)
+    def __init__(self, mode: str = "normal", port: int = 0, model: str = MODELS[0]) -> None:
+        self.fake = FakeAiry(mode, model=model)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(self.fake))
         self.thread: Optional[threading.Thread] = None
 
@@ -190,9 +194,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--mode", choices=("normal", "volatile", "refuse", "reset"), default="normal")
+    ap.add_argument("--model", choices=MODELS, default=MODELS[0], help="captured pages to serve")
     a = ap.parse_args()
-    srv = FakeServer(a.mode, a.port)
-    print(f"Fake Airy ({a.mode}) at http://{srv.host}. Ctrl+C stops. "
+    srv = FakeServer(a.mode, a.port, a.model)
+    print(f"Fake {a.model} ({a.mode}) at http://{srv.host}. Ctrl+C stops. "
           "A soft reset (POST /soft_reset) is the power cycle.")
     try:
         srv.httpd.serve_forever()

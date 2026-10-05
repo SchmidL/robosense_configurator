@@ -4,11 +4,17 @@ Read, change, write, and verify the settings of a RoboSense lidar through the we
 inside the lidar. No browser is necessary. It works on a laptop and on a headless box.
 
 - One file: `rs_webcfg.py`. Python 3.8 or newer. Standard library only.
-- Tested on the RoboSense Airy, software `26042112` (web page captured in
-  `tests/fixtures/airy_26042112/`).
-- The Fairy uses the same page family. Run `ui-check` before you write to a new model or
-  a new firmware.
 - The E1R has no web page. Use LidarAssistant for the E1R.
+
+## Tested models
+
+| Model | Software (`bot_soft_v`) | Write test | Web page |
+|---|---|---|---|
+| Airy | `26042112` | PASS, 2026-10-05 | All fields of the catalog |
+| Fairy | `26031303` | PASS, 2026-10-05 | 12 fields fewer, no IMU rate 500Hz. See `ui-check` |
+
+The captured pages are in `tests/fixtures/`. Run `ui-check` before you write to a new
+model or a new firmware.
 
 ## Quick start
 
@@ -81,13 +87,14 @@ Add the address in a second terminal while the tool waits for the restart.
 4. **Backup.** The old values go to `rs_webcfg_backups/<model>_<serial>_<time>.json`.
 5. **Save.** The same request as the browser: one POST to `/Parameter_Setting.html` for
    each tab with a change, with its own Save button. The tab with the address is last.
-   The Airy answers a save with a TCP reset and no HTTP answer, but it applies the save.
-   So the tool does not stop at a reset. Step 6 decides.
+   The Airy and the Fairy answer a save with a TCP reset and no HTTP answer, but they
+   apply the save. So the tool does not stop at a reset. Step 6 decides.
 6. **Read back now.** This shows the running values. If none of the changes is visible,
    the lidar refused the save.
-7. **Restart.** Default: you disconnect and connect the power. The tool waits until the
-   start-up counter (`startup_times` in `/diag_data.json`) increases. That proves the
-   restart. It looks at the old and at the new address.
+7. **Restart.** The Airy and the Fairy restart by themselves approximately 3 s after a
+   save. The start-up counter (`startup_times` in `/diag_data.json`) proves the restart.
+   If the counter does not increase, the tool asks you to disconnect and connect the
+   power, and it waits. It looks at the old and at the new address.
 8. **Verify.** It reads all values after the restart. `PASS`: each change is stored and
    no other value changed. `FAIL`: a table shows each value that is wrong. Exit code 3.
 
@@ -95,7 +102,7 @@ Add the address in a second terminal while the tool waits for the restart.
 
 | Option | Effect |
 |---|---|
-| `--reboot manual` | Default. You cycle the power. The only tested method. |
+| `--reboot manual` | Default. If the lidar does not restart by itself, you cycle the power. |
 | `--reboot soft` | POST `/soft_reset`. The web page uses it after a firmware update. Not tested for a restart without an update. If no restart comes, cycle the power. |
 | `--reboot none` | No restart. The values are not proven. Use `verify --since <count>` later. |
 | `--via json` | Use the "JSON Configuration Upload" of the System page (`/upload-json`) instead of the form. |
@@ -116,7 +123,7 @@ lidar. A value can be the code or the label on the web page:
 
 | Command | Use |
 |---|---|
-| `check FILE` | Check a file offline. `--against-lidar` also uses the lidar variant. |
+| `check FILE` | Check a file offline. `--against-lidar` also uses the fields and lists of the lidar. |
 | `diff FILE` | Differences between the lidar and the file. |
 | `verify FILE --since N` | Compare. `--since N`: the start-up counter must be above `N`, so the values come from flash. |
 | `set --file FILE K=V ...` | Change a file, not the lidar. `network X --file FILE` does the same. |
@@ -146,24 +153,33 @@ On this Airy (`VarT` = 0), the page hides `MSOP1 Port Number`, `Rain/Blockage De
 Distance`, `Rain Detection Sensitivity`, `Blockage Detection Sensitivity`, and
 `Poor Performance Channel Mask`. `Cyc` = 5 removes the IMU rate 500 Hz.
 
+The Fairy page has no `VarT`. These fields are not in its form: `MSOP1 Port Number`,
+`Motor Reversal`, the three rain and blockage fields, `Poor Performance Channel Mask`,
+`Dead Zone 10cm Enable`, `Channel 81 85 89 93 Enable`, `Gap Filling Enable`,
+`Ranging Mode`, `Rain Fog Switch`, and `Number Of Lines`. The JSON of the Fairy still has
+most of these keys. The tool does not send them, and the check stops a change to them.
+
 ## Lessons from the bring-up
 
 - **A save can return HTTP 200 and still not reach the flash.** On 2026-10-01 the Airy
   did not keep three saves of the pattern lidar `.10`, destination `.1` = gateway. The
   check gives a warning for destination = gateway. Step 6 and step 8 find such a failure.
-- **`/setting_data.json` shows the running values.** Only a read after a restart proves a
-  save. The start-up counter proves the restart.
+- **Only a read after a restart proves a save.** The start-up counter proves the restart.
 - **The Airy sends UTC with `No Leap Second` = OFF.** The effect of ON is not tested.
 
 ## If the web page changes
 
-`ui-check` reads `Parameter_Setting.html` from the lidar and compares each field, each
-list, and each option with the catalog. Do this on each new model and firmware. If it
-reports a difference, update `CATALOG` and `_builtin_layout()` in `rs_webcfg.py`, and add
-the new page to `tests/fixtures/`.
+The catalog in `rs_webcfg.py` holds every field that the tool knows. Each model has a
+part of it. The tool reads the form of the lidar before each write, and it sends only the
+fields of that form. Without the form, it sends nothing.
 
-The tool reads the form from the lidar at each write. It uses the built-in copy only if it
-cannot read the page.
+`ui-check` compares the form of the lidar with the catalog:
+
+- A field or an option of the catalog that the page does not have: a note. That is
+  normal for a smaller model. Uploads are possible.
+- A field, an option, or a label on the page that the catalog does not know: an error,
+  exit code 2. Add it to `CATALOG` in `rs_webcfg.py`, and add the page to
+  `tests/fixtures/`.
 
 ## Tests
 
@@ -172,9 +188,10 @@ cd misc/robosense_webcfg
 python3 -m unittest discover -s tests -v
 ```
 
-`tests/fake_lidar.py` is a fake Airy web server. It serves the captured pages and keeps
-running and stored values apart, like the real lidar. Its modes `volatile` and `refuse`
-simulate a save that is lost at the restart and a save that the lidar refuses. To practise
+`tests/fake_lidar.py` is a fake lidar web server (`--model` selects Airy or Fairy). It serves the captured pages and keeps
+running and stored values apart, like the real lidar. Its mode `reset` acts like the real lidars:
+TCP reset after a save, then a restart. The modes `volatile` and `refuse` simulate a save
+that is lost at the restart and a save that the lidar refuses. To practise
 without a lidar:
 
 ```bash
